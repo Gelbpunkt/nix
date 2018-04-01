@@ -1,0 +1,1202 @@
+From 7daf66bbb9f15b9b3af4fc642ea6d869348ff94b Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Sun, 1 Apr 2018 19:06:34 +0200
+Subject: [PATCH 01/15] Add getrlimit(2) and setrlimit(2)
+
+---
+ src/sys/mod.rs        |  2 ++
+ src/sys/resource.rs   | 69 +++++++++++++++++++++++++++++++++++++++++++
+ test/test.rs          |  1 +
+ test/test_resource.rs | 22 ++++++++++++++
+ 4 files changed, 94 insertions(+)
+ create mode 100644 src/sys/resource.rs
+ create mode 100644 test/test_resource.rs
+
+diff --git a/src/sys/mod.rs b/src/sys/mod.rs
+index d3c2f92bb..5bd4395c8 100644
+--- a/src/sys/mod.rs
++++ b/src/sys/mod.rs
+@@ -53,6 +53,8 @@ pub mod quota;
+ #[cfg(any(target_os = "linux"))]
+ pub mod reboot;
+ 
++pub mod resource;
++
+ pub mod select;
+ 
+ #[cfg(any(target_os = "android",
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+new file mode 100644
+index 000000000..83b0123f0
+--- /dev/null
++++ b/src/sys/resource.rs
+@@ -0,0 +1,69 @@
++use std::mem;
++
++use libc::{self, c_int};
++pub use libc::{rlimit, rlim_t, RLIM_INFINITY};
++
++#[cfg(any(target_os = "linux",
++          target_os = "openbsd",
++          target_os = "netbsd",
++          target_os = "bitrig"))]
++pub use libc::{RLIM_SAVED_CUR, RLIM_SAVED_MAX};
++
++use {Errno, Result};
++
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++#[repr(i32)]
++pub enum Resource {
++    // POSIX
++    RLIMIT_CORE = libc::RLIMIT_CORE,
++    RLIMIT_CPU = libc::RLIMIT_CPU,
++    RLIMIT_DATA = libc::RLIMIT_DATA,
++    RLIMIT_FSIZE = libc::RLIMIT_FSIZE,
++    RLIMIT_NOFILE = libc::RLIMIT_NOFILE,
++    RLIMIT_STACK = libc::RLIMIT_STACK,
++    RLIMIT_AS = libc::RLIMIT_AS,
++    // BSDs and Linux
++    #[cfg(all(unix, not(target_os = "solaris")))]
++    RLIMIT_MEMLOCK = libc::RLIMIT_MEMLOCK,
++    #[cfg(all(unix, not(target_os = "solaris")))]
++    RLIMIT_NPROC = libc::RLIMIT_NPROC,
++    #[cfg(all(unix, not(target_os = "solaris")))]
++    RLIMIT_RSS = libc::RLIMIT_RSS,
++    // Linux-only
++    #[cfg(any(target_os = "linux", target_os = "android"))]
++    RLIMIT_LOCKS = libc::RLIMIT_LOCKS,
++    #[cfg(any(target_os = "linux", target_os = "android"))]
++    RLIMIT_MSGQUEUE = libc::RLIMIT_MSGQUEUE,
++    #[cfg(any(target_os = "linux", target_os = "android"))]
++    RLIMIT_NICE = libc::RLIMIT_NICE,
++    #[cfg(any(target_os = "linux", target_os = "android"))]
++    RLIMIT_RTPRIO = libc::RLIMIT_RTPRIO,
++    #[cfg(any(target_os = "linux", target_os = "android"))]
++    RLIMIT_RTTIME = libc::RLIMIT_RTTIME,
++    #[cfg(any(target_os = "linux", target_os = "android"))]
++    RLIMIT_SIGPENDING = libc::RLIMIT_SIGPENDING,
++}
++
++#[inline]
++fn rlim_to_option(rlim: rlim_t) -> Option<rlim_t> {
++    match rlim {
++        RLIM_INFINITY => None,
++        rlim => Some(rlim),
++    }
++}
++
++pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)> {
++    let mut rlim: rlimit = unsafe { mem::uninitialized() };
++    let res = unsafe { libc::getrlimit(resource as c_int, &mut rlim as *mut _) };
++    Errno::result(res)?;
++    Ok((rlim_to_option(rlim.rlim_cur), rlim_to_option(rlim.rlim_max)))
++}
++
++pub fn setrlimit(resource: Resource, limit: (Option<rlim_t>, Option<rlim_t>)) -> Result<()> {
++    let mut rlim: rlimit = unsafe { mem::uninitialized() };
++    rlim.rlim_cur = limit.0.unwrap_or(RLIM_INFINITY);
++    rlim.rlim_max = limit.1.unwrap_or(RLIM_INFINITY);
++
++    let res = unsafe { libc::setrlimit(resource as c_int, &rlim as *const _) };
++    Errno::result(res).map(drop)
++}
+diff --git a/test/test.rs b/test/test.rs
+index 370ae0391..91f5ba87a 100644
+--- a/test/test.rs
++++ b/test/test.rs
+@@ -114,6 +114,7 @@ mod test_kmod;
+ mod test_mq;
+ mod test_net;
+ mod test_nix_path;
++mod test_resource;
+ mod test_poll;
+ mod test_pty;
+ #[cfg(any(target_os = "android",
+diff --git a/test/test_resource.rs b/test/test_resource.rs
+new file mode 100644
+index 000000000..0aa302306
+--- /dev/null
++++ b/test/test_resource.rs
+@@ -0,0 +1,22 @@
++use nix::sys::resource::{Resource, getrlimit, setrlimit};
++
++#[test]
++pub fn test_resource_limits() {
++    let mut limit = getrlimit(Resource::RLIMIT_STACK).unwrap();
++    assert!(limit.0 != limit.1);
++
++    let orig_limit = limit;
++
++    limit.0 = limit.1;
++    setrlimit(Resource::RLIMIT_STACK, limit).unwrap();
++
++    let limit2 = getrlimit(Resource::RLIMIT_STACK).unwrap();
++    assert_eq!(limit.0, limit2.0);
++    assert_eq!(limit.1, limit2.1);
++
++    setrlimit(Resource::RLIMIT_STACK, orig_limit).unwrap();
++
++    let final_limit = getrlimit(Resource::RLIMIT_STACK).unwrap();
++    assert_eq!(orig_limit.0, final_limit.0);
++    assert_eq!(orig_limit.1, final_limit.1);
++}
+
+From c10d071bc5e4af1fb9e583822be1233253166586 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Sun, 1 Apr 2018 21:46:12 +0200
+Subject: [PATCH 02/15] Update API
+
+---
+ src/sys/resource.rs   | 48 +++++++++++++++++--------------------------
+ test/test_resource.rs | 16 +++++++--------
+ 2 files changed, 26 insertions(+), 38 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 83b0123f0..e57a87681 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -1,13 +1,7 @@
+ use std::mem;
+ 
+-use libc::{self, c_int};
+-pub use libc::{rlimit, rlim_t, RLIM_INFINITY};
+-
+-#[cfg(any(target_os = "linux",
+-          target_os = "openbsd",
+-          target_os = "netbsd",
+-          target_os = "bitrig"))]
+-pub use libc::{RLIM_SAVED_CUR, RLIM_SAVED_MAX};
++use libc::{self, c_int, rlimit, RLIM_INFINITY};
++pub use libc::rlim_t;
+ 
+ use {Errno, Result};
+ 
+@@ -15,13 +9,14 @@ use {Errno, Result};
+ #[repr(i32)]
+ pub enum Resource {
+     // POSIX
++    RLIMIT_AS = libc::RLIMIT_AS,
+     RLIMIT_CORE = libc::RLIMIT_CORE,
+     RLIMIT_CPU = libc::RLIMIT_CPU,
+     RLIMIT_DATA = libc::RLIMIT_DATA,
+     RLIMIT_FSIZE = libc::RLIMIT_FSIZE,
+     RLIMIT_NOFILE = libc::RLIMIT_NOFILE,
+     RLIMIT_STACK = libc::RLIMIT_STACK,
+-    RLIMIT_AS = libc::RLIMIT_AS,
++
+     // BSDs and Linux
+     #[cfg(all(unix, not(target_os = "solaris")))]
+     RLIMIT_MEMLOCK = libc::RLIMIT_MEMLOCK,
+@@ -29,40 +24,35 @@ pub enum Resource {
+     RLIMIT_NPROC = libc::RLIMIT_NPROC,
+     #[cfg(all(unix, not(target_os = "solaris")))]
+     RLIMIT_RSS = libc::RLIMIT_RSS,
+-    // Linux-only
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++
++    // Android and Linux only
++    #[cfg(any(target_os = "android", target_os = "linux"))]
+     RLIMIT_LOCKS = libc::RLIMIT_LOCKS,
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++    #[cfg(any(target_os = "android", target_os = "linux"))]
+     RLIMIT_MSGQUEUE = libc::RLIMIT_MSGQUEUE,
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++    #[cfg(any(target_os = "android", target_os = "linux"))]
+     RLIMIT_NICE = libc::RLIMIT_NICE,
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++    #[cfg(any(target_os = "android", target_os = "linux"))]
+     RLIMIT_RTPRIO = libc::RLIMIT_RTPRIO,
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++    #[cfg(any(target_os = "android", target_os = "linux"))]
+     RLIMIT_RTTIME = libc::RLIMIT_RTTIME,
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++    #[cfg(any(target_os = "android", target_os = "linux"))]
+     RLIMIT_SIGPENDING = libc::RLIMIT_SIGPENDING,
+ }
+ 
+-#[inline]
+-fn rlim_to_option(rlim: rlim_t) -> Option<rlim_t> {
+-    match rlim {
+-        RLIM_INFINITY => None,
+-        rlim => Some(rlim),
+-    }
+-}
+-
+ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)> {
+     let mut rlim: rlimit = unsafe { mem::uninitialized() };
+     let res = unsafe { libc::getrlimit(resource as c_int, &mut rlim as *mut _) };
+-    Errno::result(res)?;
+-    Ok((rlim_to_option(rlim.rlim_cur), rlim_to_option(rlim.rlim_max)))
++    Errno::result(res).map(|_| {
++        (if rlim.rlim_cur != RLIM_INFINITY { Some(rlim.rlim_cur) } else { None },
++         if rlim.rlim_max != RLIM_INFINITY { Some(rlim.rlim_max) } else { None })
++    })
+ }
+ 
+-pub fn setrlimit(resource: Resource, limit: (Option<rlim_t>, Option<rlim_t>)) -> Result<()> {
++pub fn setrlimit(resource: Resource, soft_limit: Option<rlim_t>, hard_limit: Option<rlim_t>) -> Result<()> {
+     let mut rlim: rlimit = unsafe { mem::uninitialized() };
+-    rlim.rlim_cur = limit.0.unwrap_or(RLIM_INFINITY);
+-    rlim.rlim_max = limit.1.unwrap_or(RLIM_INFINITY);
++    rlim.rlim_cur = soft_limit.unwrap_or(RLIM_INFINITY);
++    rlim.rlim_max = hard_limit.unwrap_or(RLIM_INFINITY);
+ 
+     let res = unsafe { libc::setrlimit(resource as c_int, &rlim as *const _) };
+     Errno::result(res).map(drop)
+diff --git a/test/test_resource.rs b/test/test_resource.rs
+index 0aa302306..d1dc9048d 100644
+--- a/test/test_resource.rs
++++ b/test/test_resource.rs
+@@ -2,19 +2,17 @@ use nix::sys::resource::{Resource, getrlimit, setrlimit};
+ 
+ #[test]
+ pub fn test_resource_limits() {
+-    let mut limit = getrlimit(Resource::RLIMIT_STACK).unwrap();
+-    assert!(limit.0 != limit.1);
++    let (mut soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_STACK).unwrap();
++    let orig_limit = (soft_limit, hard_limit);
+ 
+-    let orig_limit = limit;
+-
+-    limit.0 = limit.1;
+-    setrlimit(Resource::RLIMIT_STACK, limit).unwrap();
++    soft_limit = hard_limit;
++    setrlimit(Resource::RLIMIT_STACK, soft_limit, hard_limit).unwrap();
+ 
+     let limit2 = getrlimit(Resource::RLIMIT_STACK).unwrap();
+-    assert_eq!(limit.0, limit2.0);
+-    assert_eq!(limit.1, limit2.1);
++    assert_eq!(soft_limit, limit2.0);
++    assert_eq!(hard_limit, limit2.1);
+ 
+-    setrlimit(Resource::RLIMIT_STACK, orig_limit).unwrap();
++    setrlimit(Resource::RLIMIT_STACK, orig_limit.0, orig_limit.1).unwrap();
+ 
+     let final_limit = getrlimit(Resource::RLIMIT_STACK).unwrap();
+     assert_eq!(orig_limit.0, final_limit.0);
+
+From a015fc11e6a6a4e324acdf07da453557c15eeb66 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Sun, 1 Apr 2018 21:50:08 +0200
+Subject: [PATCH 03/15] Use libc_enum
+
+---
+ src/sys/resource.rs | 67 +++++++++++++++++++++++----------------------
+ 1 file changed, 34 insertions(+), 33 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index e57a87681..faece905a 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -5,39 +5,40 @@ pub use libc::rlim_t;
+ 
+ use {Errno, Result};
+ 
+-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+-#[repr(i32)]
+-pub enum Resource {
+-    // POSIX
+-    RLIMIT_AS = libc::RLIMIT_AS,
+-    RLIMIT_CORE = libc::RLIMIT_CORE,
+-    RLIMIT_CPU = libc::RLIMIT_CPU,
+-    RLIMIT_DATA = libc::RLIMIT_DATA,
+-    RLIMIT_FSIZE = libc::RLIMIT_FSIZE,
+-    RLIMIT_NOFILE = libc::RLIMIT_NOFILE,
+-    RLIMIT_STACK = libc::RLIMIT_STACK,
+-
+-    // BSDs and Linux
+-    #[cfg(all(unix, not(target_os = "solaris")))]
+-    RLIMIT_MEMLOCK = libc::RLIMIT_MEMLOCK,
+-    #[cfg(all(unix, not(target_os = "solaris")))]
+-    RLIMIT_NPROC = libc::RLIMIT_NPROC,
+-    #[cfg(all(unix, not(target_os = "solaris")))]
+-    RLIMIT_RSS = libc::RLIMIT_RSS,
+-
+-    // Android and Linux only
+-    #[cfg(any(target_os = "android", target_os = "linux"))]
+-    RLIMIT_LOCKS = libc::RLIMIT_LOCKS,
+-    #[cfg(any(target_os = "android", target_os = "linux"))]
+-    RLIMIT_MSGQUEUE = libc::RLIMIT_MSGQUEUE,
+-    #[cfg(any(target_os = "android", target_os = "linux"))]
+-    RLIMIT_NICE = libc::RLIMIT_NICE,
+-    #[cfg(any(target_os = "android", target_os = "linux"))]
+-    RLIMIT_RTPRIO = libc::RLIMIT_RTPRIO,
+-    #[cfg(any(target_os = "android", target_os = "linux"))]
+-    RLIMIT_RTTIME = libc::RLIMIT_RTTIME,
+-    #[cfg(any(target_os = "android", target_os = "linux"))]
+-    RLIMIT_SIGPENDING = libc::RLIMIT_SIGPENDING,
++libc_enum!{
++    #[repr(i32)]
++    pub enum Resource {
++        // POSIX
++        RLIMIT_AS,
++        RLIMIT_CORE,
++        RLIMIT_CPU,
++        RLIMIT_DATA,
++        RLIMIT_FSIZE,
++        RLIMIT_NOFILE,
++        RLIMIT_STACK,
++
++        // BSDs and Linux
++        #[cfg(all(unix, not(target_os = "solaris")))]
++        RLIMIT_MEMLOCK,
++        #[cfg(all(unix, not(target_os = "solaris")))]
++        RLIMIT_NPROC,
++        #[cfg(all(unix, not(target_os = "solaris")))]
++        RLIMIT_RSS,
++
++        // Android and Linux only
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_LOCKS,
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_MSGQUEUE,
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_NICE,
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_RTPRIO,
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_RTTIME,
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_SIGPENDING,
++    }
+ }
+ 
+ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)> {
+
+From 0a29195b32222a54df99c5bb200e43f153a90361 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Sun, 1 Apr 2018 22:00:35 +0200
+Subject: [PATCH 04/15] Add freebsd specific rlimits
+
+---
+ src/sys/resource.rs | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index faece905a..fec5827b6 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -38,6 +38,16 @@ libc_enum!{
+         RLIMIT_RTTIME,
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_SIGPENDING,
++
++        // Non-Linux
++        #[cfg(target_os = "freebsd")]
++        RLIMIT_KQUEUES,
++        #[cfg(target_os = "freebsd")]
++        RLIMIT_NPTS,
++        #[cfg(target_os = "freebsd")]
++        RLIMIT_SBSIZE,
++        #[cfg(target_os = "freebsd")]
++        RLIMIT_SWAP,
+     }
+ }
+ 
+
+From d78b32edcb832af7e8f0b18d78dc196b95ecd764 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Sun, 1 Apr 2018 22:02:39 +0200
+Subject: [PATCH 05/15] Use explicit target_os list
+
+---
+ src/sys/resource.rs | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index fec5827b6..1e6d28e3a 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -18,11 +18,11 @@ libc_enum!{
+         RLIMIT_STACK,
+ 
+         // BSDs and Linux
+-        #[cfg(all(unix, not(target_os = "solaris")))]
++        #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_MEMLOCK,
+-        #[cfg(all(unix, not(target_os = "solaris")))]
++        #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_NPROC,
+-        #[cfg(all(unix, not(target_os = "solaris")))]
++        #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_RSS,
+ 
+         // Android and Linux only
+
+From a96627cace144131c292d306a08974feae031cd9 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Mon, 2 Apr 2018 00:55:38 +0200
+Subject: [PATCH 06/15] Add docs
+
+---
+ src/sys/resource.rs | 34 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 1e6d28e3a..005570d7e 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -1,3 +1,4 @@
++//! Configure the process resource limits.
+ use std::mem;
+ 
+ use libc::{self, c_int, rlimit, RLIM_INFINITY};
+@@ -39,18 +40,31 @@ libc_enum!{
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_SIGPENDING,
+ 
+-        // Non-Linux
++        // Available on some BSD
+         #[cfg(target_os = "freebsd")]
+         RLIMIT_KQUEUES,
+         #[cfg(target_os = "freebsd")]
+         RLIMIT_NPTS,
+-        #[cfg(target_os = "freebsd")]
++        #[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
+         RLIMIT_SBSIZE,
+         #[cfg(target_os = "freebsd")]
+         RLIMIT_SWAP,
+     }
+ }
+ 
++/// Get the current processes resource limits
++///
++/// A value of `None` corresponds to `RLIM_INFINITY`, which means there's no limit.
++///
++/// # Parameters
++///
++/// * `resource`: The [`Resource`] that we want to get the limits of.
++///
++/// # References
++///
++/// [getrlimit(2)](https://linux.die.net/man/2/getrlimit)
++///
++/// [`Resource`]: enum.Resource.html
+ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)> {
+     let mut rlim: rlimit = unsafe { mem::uninitialized() };
+     let res = unsafe { libc::getrlimit(resource as c_int, &mut rlim as *mut _) };
+@@ -60,6 +74,22 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+     })
+ }
+ 
++/// Set the current processes resource limits
++///
++/// A value of `None` corresponds to `RLIM_INFINITY`, which means there's no limit.
++///
++/// # Parameters
++///
++/// * `resource`: The [`Resource`] that we want to set the limits of.
++/// * `soft_limit`: The value that the kenrel enforces for the corresponding resource.
++/// * `hard_limit`: The ceiling for the soft limit. Must be lower or equal to the current hard limit
++///   for non-root users.
++///
++/// # References
++///
++/// [setrlimit(2)](https://linux.die.net/man/2/setrlimit)
++///
++/// [`Resource`]: enum.Resource.html
+ pub fn setrlimit(resource: Resource, soft_limit: Option<rlim_t>, hard_limit: Option<rlim_t>) -> Result<()> {
+     let mut rlim: rlimit = unsafe { mem::uninitialized() };
+     rlim.rlim_cur = soft_limit.unwrap_or(RLIM_INFINITY);
+
+From d211451ea530d247d54e988789ca68ca7c296007 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Mon, 2 Apr 2018 01:01:14 +0200
+Subject: [PATCH 07/15] Increase test coverage
+
+---
+ test/test_resource.rs | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/test/test_resource.rs b/test/test_resource.rs
+index d1dc9048d..336ed05ca 100644
+--- a/test/test_resource.rs
++++ b/test/test_resource.rs
+@@ -1,7 +1,22 @@
+ use nix::sys::resource::{Resource, getrlimit, setrlimit};
+ 
+ #[test]
+-pub fn test_resource_limits() {
++pub fn test_resource_limits_nofile() {
++    let (soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
++
++    // make sure the soft limit and hard limit are not equal
++    let soft_limit = match soft_limit {
++        Some(nofile) => Some(nofile -1),
++        None => Some(1024),
++    };
++    setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit).unwrap();
++
++    let (new_soft_limit, new_hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
++    assert!(new_soft_limit != new_hard_limit);
++}
++
++#[test]
++pub fn test_resource_limits_stack() {
+     let (mut soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_STACK).unwrap();
+     let orig_limit = (soft_limit, hard_limit);
+ 
+
+From 65541c9c541dbb0dfab133a42d125393a0114681 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Mon, 2 Apr 2018 01:09:55 +0200
+Subject: [PATCH 08/15] Add examples
+
+---
+ src/sys/resource.rs | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 005570d7e..3e54ad205 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -60,6 +60,18 @@ libc_enum!{
+ ///
+ /// * `resource`: The [`Resource`] that we want to get the limits of.
+ ///
++/// # Examples
++///
++/// ```
++/// use nix::sys::resource::{getrlimit, Resource};
++///
++/// fn main() {
++///     let (soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
++///     println!("current soft_limit: {:?}", soft_limit);
++///     println!("current hard_limit: {:?}", hard_limit);
++/// }
++/// ```
++///
+ /// # References
+ ///
+ /// [getrlimit(2)](https://linux.die.net/man/2/getrlimit)
+@@ -85,6 +97,18 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ /// * `hard_limit`: The ceiling for the soft limit. Must be lower or equal to the current hard limit
+ ///   for non-root users.
+ ///
++/// # Examples
++///
++/// ```no_run
++/// use nix::sys::resource::{setrlimit, Resource};
++///
++/// fn main() {
++///     let soft_limit = Some(1024);
++///     let hard_limit = None;
++///     setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit).unwrap();
++/// }
++/// ```
++///
+ /// # References
+ ///
+ /// [setrlimit(2)](https://linux.die.net/man/2/setrlimit)
+
+From 28718e65fa5796d18223aa8a0ac3a5a73633507d Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Mon, 2 Apr 2018 02:35:17 +0200
+Subject: [PATCH 09/15] Update documentation and tests
+
+---
+ src/sys/resource.rs   | 28 +++++++++++++---------------
+ test/test_resource.rs |  2 +-
+ 2 files changed, 14 insertions(+), 16 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 3e54ad205..1b8f85f06 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -63,13 +63,12 @@ libc_enum!{
+ /// # Examples
+ ///
+ /// ```
+-/// use nix::sys::resource::{getrlimit, Resource};
+-///
+-/// fn main() {
+-///     let (soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+-///     println!("current soft_limit: {:?}", soft_limit);
+-///     println!("current hard_limit: {:?}", hard_limit);
+-/// }
++/// # use nix::sys::resource::{getrlimit, Resource};
++/// # fn main() {
++/// let (soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
++/// println!("current soft_limit: {:?}", soft_limit);
++/// println!("current hard_limit: {:?}", hard_limit);
++/// # }
+ /// ```
+ ///
+ /// # References
+@@ -93,20 +92,19 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ /// # Parameters
+ ///
+ /// * `resource`: The [`Resource`] that we want to set the limits of.
+-/// * `soft_limit`: The value that the kenrel enforces for the corresponding resource.
++/// * `soft_limit`: The value that the kernel enforces for the corresponding resource.
+ /// * `hard_limit`: The ceiling for the soft limit. Must be lower or equal to the current hard limit
+ ///   for non-root users.
+ ///
+ /// # Examples
+ ///
+ /// ```no_run
+-/// use nix::sys::resource::{setrlimit, Resource};
+-///
+-/// fn main() {
+-///     let soft_limit = Some(1024);
+-///     let hard_limit = None;
+-///     setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit).unwrap();
+-/// }
++/// # use nix::sys::resource::{setrlimit, Resource};
++/// # fn main() {
++/// let soft_limit = Some(1024);
++/// let hard_limit = None;
++/// setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit).unwrap();
++/// # }
+ /// ```
+ ///
+ /// # References
+diff --git a/test/test_resource.rs b/test/test_resource.rs
+index 336ed05ca..7ca6d3940 100644
+--- a/test/test_resource.rs
++++ b/test/test_resource.rs
+@@ -12,7 +12,7 @@ pub fn test_resource_limits_nofile() {
+     setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit).unwrap();
+ 
+     let (new_soft_limit, new_hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+-    assert!(new_soft_limit != new_hard_limit);
++    assert_eq!(new_soft_limit, soft_limit);
+ }
+ 
+ #[test]
+
+From e8e833f3328d4bd609ec7cc45b5196f183866f0f Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Wed, 4 Apr 2018 18:42:41 +0200
+Subject: [PATCH 10/15] Codestyle and docs
+
+---
+ src/sys/resource.rs   | 13 ++++++-------
+ test/test_resource.rs |  4 ++--
+ 2 files changed, 8 insertions(+), 9 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 1b8f85f06..e815326e5 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -54,7 +54,7 @@ libc_enum!{
+ 
+ /// Get the current processes resource limits
+ ///
+-/// A value of `None` corresponds to `RLIM_INFINITY`, which means there's no limit.
++/// A value of None indicates that there's no limit.
+ ///
+ /// # Parameters
+ ///
+@@ -64,11 +64,10 @@ libc_enum!{
+ ///
+ /// ```
+ /// # use nix::sys::resource::{getrlimit, Resource};
+-/// # fn main() {
++///
+ /// let (soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+ /// println!("current soft_limit: {:?}", soft_limit);
+ /// println!("current hard_limit: {:?}", hard_limit);
+-/// # }
+ /// ```
+ ///
+ /// # References
+@@ -79,6 +78,7 @@ libc_enum!{
+ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)> {
+     let mut rlim: rlimit = unsafe { mem::uninitialized() };
+     let res = unsafe { libc::getrlimit(resource as c_int, &mut rlim as *mut _) };
++    // TODO: use Option::filter after it has been stabilized
+     Errno::result(res).map(|_| {
+         (if rlim.rlim_cur != RLIM_INFINITY { Some(rlim.rlim_cur) } else { None },
+          if rlim.rlim_max != RLIM_INFINITY { Some(rlim.rlim_max) } else { None })
+@@ -87,7 +87,7 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ 
+ /// Set the current processes resource limits
+ ///
+-/// A value of `None` corresponds to `RLIM_INFINITY`, which means there's no limit.
++/// A value of None indicates that there's no limit.
+ ///
+ /// # Parameters
+ ///
+@@ -100,11 +100,10 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ ///
+ /// ```no_run
+ /// # use nix::sys::resource::{setrlimit, Resource};
+-/// # fn main() {
++///
+ /// let soft_limit = Some(1024);
+ /// let hard_limit = None;
+ /// setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit).unwrap();
+-/// # }
+ /// ```
+ ///
+ /// # References
+@@ -118,5 +117,5 @@ pub fn setrlimit(resource: Resource, soft_limit: Option<rlim_t>, hard_limit: Opt
+     rlim.rlim_max = hard_limit.unwrap_or(RLIM_INFINITY);
+ 
+     let res = unsafe { libc::setrlimit(resource as c_int, &rlim as *const _) };
+-    Errno::result(res).map(drop)
++    Errno::result(res).map(|_| ())
+ }
+diff --git a/test/test_resource.rs b/test/test_resource.rs
+index 7ca6d3940..4735d0a38 100644
+--- a/test/test_resource.rs
++++ b/test/test_resource.rs
+@@ -6,12 +6,12 @@ pub fn test_resource_limits_nofile() {
+ 
+     // make sure the soft limit and hard limit are not equal
+     let soft_limit = match soft_limit {
+-        Some(nofile) => Some(nofile -1),
++        Some(nofile) => Some(nofile - 1),
+         None => Some(1024),
+     };
+     setrlimit(Resource::RLIMIT_NOFILE, soft_limit, hard_limit).unwrap();
+ 
+-    let (new_soft_limit, new_hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
++    let (new_soft_limit, _new_hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+     assert_eq!(new_soft_limit, soft_limit);
+ }
+ 
+
+From b900fa09dda98ca34274f0f6d595493513d536b7 Mon Sep 17 00:00:00 2001
+From: kpcyrd <git@rxv.cc>
+Date: Sat, 14 Apr 2018 18:47:55 +0200
+Subject: [PATCH 11/15] Document Resource enum
+
+---
+ src/sys/resource.rs | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index e815326e5..7f8fa507d 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -7,46 +7,67 @@ pub use libc::rlim_t;
+ use {Errno, Result};
+ 
+ libc_enum!{
++    /// A resource that limits apply to
+     #[repr(i32)]
+     pub enum Resource {
+         // POSIX
++        /// This is the maximum size of the process's virtual memory (address space). The limit is specified in bytes, and is rounded down to the system page size.
+         RLIMIT_AS,
++        /// This is the maximum size of a core file (see core(5)) in bytes that the process may dump.
+         RLIMIT_CORE,
++        /// This is a limit, in seconds, on the amount of CPU time that the process can consume.
+         RLIMIT_CPU,
++        /// This is the maximum size of the process's data segment (initialized data, uninitialized data, and heap). The limit is specified in bytes, and is rounded down to the system page size.
+         RLIMIT_DATA,
++        /// This is the maximum size in bytes of files that the process may create. Attempts to extend a file beyond this limit result in delivery of a SIGXFSZ signal.
+         RLIMIT_FSIZE,
++        /// This specifies a value one greater than the maximum file descriptor number that can be opened by this process.
+         RLIMIT_NOFILE,
++        /// This is the maximum size of the process stack, in bytes. Upon reaching this limit, a SIGSEGV signal is generated.
+         RLIMIT_STACK,
+ 
+         // BSDs and Linux
++        /// This is the maximum number of bytes of memory that may be locked into RAM. This limit is in effect rounded down to the nearest multiple of the system page size.
+         #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_MEMLOCK,
++        /// This is a limit on the number of extant process (or, more precisely on Linux, threads) for the real user ID of the calling process.
+         #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_NPROC,
++        /// This is a limit (in bytes) on the process's resident set (the number of virtual pages resident in RAM).
+         #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_RSS,
+ 
+         // Android and Linux only
++        /// This is a limit on the combined number of flock(2) locks and fcntl(2) leases that this process may establish.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_LOCKS,
++        /// This is a limit on the number of bytes that can be allocated for POSIX message queues for the real user ID of the calling process.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_MSGQUEUE,
++        /// This specifies a ceiling to which the process's nice value can be raised using setpriority(2) or nice(2). The actual ceiling for the nice value is calculated as 20 - rlim_cur.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_NICE,
++        /// This specifies a ceiling on the real-time priority that may be set for this process using sched_setscheduler(2) and sched_setparam(2).
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_RTPRIO,
++        /// This is a limit (in microseconds) on the amount of CPU time that a process scheduled under a real-time scheduling policy may consume without making a blocking system call.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_RTTIME,
++        /// This is a limit on the number of signals that may be queued for the real user ID of the calling process. Both standard and real-time signals are counted for the purpose of checking this limit.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_SIGPENDING,
+ 
+         // Available on some BSD
++        /// The maximum number of kqueues this user id is allowed to create.
+         #[cfg(target_os = "freebsd")]
+         RLIMIT_KQUEUES,
++        /// The maximum number of pseudo-terminals this user id is allowed to create.
+         #[cfg(target_os = "freebsd")]
+         RLIMIT_NPTS,
++        /// The maximum size (in bytes) of socket buffer usage for this user.
+         #[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
+         RLIMIT_SBSIZE,
++        /// The maximum size (in bytes) of the swap space that may be reserved or used by all of this user id's processes.
+         #[cfg(target_os = "freebsd")]
+         RLIMIT_SWAP,
+     }
+
+From 88c05815025bc9e3449b0b080ceeae995e182621 Mon Sep 17 00:00:00 2001
+From: Jiahong Long <jiahong888long@gmail.com>
+Date: Thu, 5 Mar 2020 17:58:01 -0800
+Subject: [PATCH 12/15] Commenting for clarity
+
+---
+ src/sys/resource.rs   |  1 +
+ test/test_resource.rs | 14 ++++++++++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 7f8fa507d..941ff26bc 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -134,6 +134,7 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ /// [`Resource`]: enum.Resource.html
+ pub fn setrlimit(resource: Resource, soft_limit: Option<rlim_t>, hard_limit: Option<rlim_t>) -> Result<()> {
+     let mut rlim: rlimit = unsafe { mem::uninitialized() };
++    // TODO: How do we handle the case where soft_limit isn't Some()?
+     rlim.rlim_cur = soft_limit.unwrap_or(RLIM_INFINITY);
+     rlim.rlim_max = hard_limit.unwrap_or(RLIM_INFINITY);
+ 
+diff --git a/test/test_resource.rs b/test/test_resource.rs
+index 4735d0a38..0e189b123 100644
+--- a/test/test_resource.rs
++++ b/test/test_resource.rs
+@@ -1,5 +1,13 @@
+ use nix::sys::resource::{Resource, getrlimit, setrlimit};
+ 
++/// Tests the RLIMIT_NOFILE functionality of getrlimit(), where the resource RLIMIT_NOFILE refers
++/// to the maximum file descriptor number that can be opened by the process (aka the maximum number
++/// of file descriptors that the process can open, since Linux 4.5).
++///
++/// We first fetch the existing file descriptor maximum values using getrlimit(), then edit the
++/// soft limit to make sure it has a new and distinct value to the hard limit. We then setrlimit()
++/// to put the new soft limit in effect, and then getrlimit() once more to ensure the limits have
++/// been updated.
+ #[test]
+ pub fn test_resource_limits_nofile() {
+     let (soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+@@ -15,6 +23,12 @@ pub fn test_resource_limits_nofile() {
+     assert_eq!(new_soft_limit, soft_limit);
+ }
+ 
++/// Tests the RLIMIT_STACK functionality of getrlimit(), where the resource RLIMIT_STACK refers to
++/// the maximum stack size that can be spawned by the current process before SIGSEGV is generated. 
++///
++/// We first save the current stack limits, then newly set the soft limit to the same size as the
++/// hard limit. We check to make sure these limits have been updated properly. We then set the
++/// stack limits back to the original values, and make sure they have been updated properly.
+ #[test]
+ pub fn test_resource_limits_stack() {
+     let (mut soft_limit, hard_limit) = getrlimit(Resource::RLIMIT_STACK).unwrap();
+
+From b07fc5112a2f345b4bf5930d11a796b70dbc35a5 Mon Sep 17 00:00:00 2001
+From: Jiahong Long <jiahong888long@gmail.com>
+Date: Fri, 6 Mar 2020 13:30:03 -0800
+Subject: [PATCH 13/15] Set nolimit (infinity) as the error mode since this is
+ Rust-specific
+
+---
+ src/sys/resource.rs | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 941ff26bc..0eebcaf9a 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -134,10 +134,9 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ /// [`Resource`]: enum.Resource.html
+ pub fn setrlimit(resource: Resource, soft_limit: Option<rlim_t>, hard_limit: Option<rlim_t>) -> Result<()> {
+     let mut rlim: rlimit = unsafe { mem::uninitialized() };
+-    // TODO: How do we handle the case where soft_limit isn't Some()?
+     rlim.rlim_cur = soft_limit.unwrap_or(RLIM_INFINITY);
+     rlim.rlim_max = hard_limit.unwrap_or(RLIM_INFINITY);
+-
++    
+     let res = unsafe { libc::setrlimit(resource as c_int, &rlim as *const _) };
+     Errno::result(res).map(|_| ())
+ }
+
+From bfd222889ff484dd01f9e068267c978e2f5ceee6 Mon Sep 17 00:00:00 2001
+From: Jiahong Long <jiahong888long@gmail.com>
+Date: Fri, 6 Mar 2020 13:45:05 -0800
+Subject: [PATCH 14/15] Making types consistent with what libc expects
+
+---
+ src/sys/resource.rs | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index 0eebcaf9a..f5ba351c7 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -1,14 +1,14 @@
+ //! Configure the process resource limits.
+ use std::mem;
+ 
+-use libc::{self, c_int, rlimit, RLIM_INFINITY};
++use libc::{self, c_uint, rlimit, RLIM_INFINITY};
+ pub use libc::rlim_t;
+ 
+ use {Errno, Result};
+ 
+ libc_enum!{
+     /// A resource that limits apply to
+-    #[repr(i32)]
++    #[repr(u32)]
+     pub enum Resource {
+         // POSIX
+         /// This is the maximum size of the process's virtual memory (address space). The limit is specified in bytes, and is rounded down to the system page size.
+@@ -97,8 +97,8 @@ libc_enum!{
+ ///
+ /// [`Resource`]: enum.Resource.html
+ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)> {
+-    let mut rlim: rlimit = unsafe { mem::uninitialized() };
+-    let res = unsafe { libc::getrlimit(resource as c_int, &mut rlim as *mut _) };
++    let mut rlim: rlimit = unsafe { mem::MaybeUninit::uninit().assume_init() };
++    let res = unsafe { libc::getrlimit(resource as c_uint, &mut rlim as *mut _) };
+     // TODO: use Option::filter after it has been stabilized
+     Errno::result(res).map(|_| {
+         (if rlim.rlim_cur != RLIM_INFINITY { Some(rlim.rlim_cur) } else { None },
+@@ -133,10 +133,10 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ ///
+ /// [`Resource`]: enum.Resource.html
+ pub fn setrlimit(resource: Resource, soft_limit: Option<rlim_t>, hard_limit: Option<rlim_t>) -> Result<()> {
+-    let mut rlim: rlimit = unsafe { mem::uninitialized() };
++    let mut rlim: rlimit = unsafe { mem::MaybeUninit::uninit().assume_init() };
+     rlim.rlim_cur = soft_limit.unwrap_or(RLIM_INFINITY);
+     rlim.rlim_max = hard_limit.unwrap_or(RLIM_INFINITY);
+     
+-    let res = unsafe { libc::setrlimit(resource as c_int, &rlim as *const _) };
++    let res = unsafe { libc::setrlimit(resource as c_uint, &rlim as *const _) };
+     Errno::result(res).map(|_| ())
+ }
+
+From 7309246ae7afa9f3ec81353f102b5bee8a2971d1 Mon Sep 17 00:00:00 2001
+From: Jiahong Long <jiahong888long@gmail.com>
+Date: Thu, 12 Mar 2020 16:00:15 -0700
+Subject: [PATCH 15/15] Conditional reprs based on the target_os (incomplete)
+
+---
+ src/sys/resource.rs | 152 ++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 134 insertions(+), 18 deletions(-)
+
+diff --git a/src/sys/resource.rs b/src/sys/resource.rs
+index f5ba351c7..7d3df8629 100644
+--- a/src/sys/resource.rs
++++ b/src/sys/resource.rs
+@@ -1,36 +1,135 @@
+ //! Configure the process resource limits.
+ use std::mem;
+ 
+-use libc::{self, c_uint, rlimit, RLIM_INFINITY};
++#[cfg(not(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "macos")))]
++use libc::{self, rlimit, __rlimit_resource_t, RLIM_INFINITY};
++
++#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "macos"))]
++use libc::{self, rlimit, c_int, RLIM_INFINITY};
++
+ pub use libc::rlim_t;
+ 
+ use {Errno, Result};
+ 
++#[cfg(target_os = "linux")]
+ libc_enum!{
+     /// A resource that limits apply to
+     #[repr(u32)]
+     pub enum Resource {
+         // POSIX
+-        /// This is the maximum size of the process's virtual memory (address space). The limit is specified in bytes, and is rounded down to the system page size.
++        /// This is the maximum size of the process's virtual memory (address space). The limit is
++        /// specified in bytes, and is rounded down to the system page size.
++        RLIMIT_AS,
++        /// This is the maximum size of a core file (see core(5)) in bytes that the process may
++        /// dump.
++        RLIMIT_CORE,
++        /// This is a limit, in seconds, on the amount of CPU time that the process can consume.
++        RLIMIT_CPU,
++        /// This is the maximum size of the process's data segment (initialized data, uninitialized
++        /// data, and heap). The limit is specified in bytes, and is rounded down to the system
++        /// page size.
++        RLIMIT_DATA,
++        /// This is the maximum size in bytes of files that the process may create. Attempts to
++        /// extend a file beyond this limit result in delivery of a SIGXFSZ signal.
++        RLIMIT_FSIZE,
++        /// This specifies a value one greater than the maximum file descriptor number that can be
++        /// opened by this process.
++        RLIMIT_NOFILE,
++        /// This is the maximum size of the process stack, in bytes. Upon reaching this limit, a
++        /// SIGSEGV signal is generated.
++        RLIMIT_STACK,
++
++        // BSDs and Linux
++        /// This is the maximum number of bytes of memory that may be locked into RAM. This limit
++        /// is in effect rounded down to the nearest multiple of the system page size.
++        #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
++        RLIMIT_MEMLOCK,
++        /// This is a limit on the number of extant process (or, more precisely on Linux, threads)
++        /// for the real user ID of the calling process.
++        #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
++        RLIMIT_NPROC,
++        /// This is a limit (in bytes) on the process's resident set (the number of virtual pages resident in RAM).
++        #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
++        RLIMIT_RSS,
++
++        // Android and Linux only
++        /// This is a limit on the combined number of flock(2) locks and fcntl(2) leases that this process may establish.
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_LOCKS,
++        /// This is a limit on the number of bytes that can be allocated for POSIX message queues
++        /// for the real user ID of the calling process.
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_MSGQUEUE,
++        /// This specifies a ceiling to which the process's nice value can be raised using
++        /// setpriority(2) or nice(2). The actual ceiling for the nice value is calculated as 20 -
++        /// rlim_cur.
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_NICE,
++        /// This specifies a ceiling on the real-time priority that may be set for this process
++        /// using sched_setscheduler(2) and sched_setparam(2).
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_RTPRIO,
++        /// This is a limit (in microseconds) on the amount of CPU time that a process scheduled
++        /// under a real-time scheduling policy may consume without making a blocking system call.
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_RTTIME,
++        /// This is a limit on the number of signals that may be queued for the real user ID of the
++        /// calling process. Both standard and real-time signals are counted for the purpose of
++        /// checking this limit.
++        #[cfg(any(target_os = "android", target_os = "linux"))]
++        RLIMIT_SIGPENDING,
++
++        // Available on some BSD
++        /// The maximum number of kqueues this user id is allowed to create.
++        #[cfg(target_os = "freebsd")]
++        RLIMIT_KQUEUES,
++        /// The maximum number of pseudo-terminals this user id is allowed to create.
++        #[cfg(target_os = "freebsd")]
++        RLIMIT_NPTS,
++        /// The maximum size (in bytes) of socket buffer usage for this user.
++        #[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
++        RLIMIT_SBSIZE,
++        /// The maximum size (in bytes) of the swap space that may be reserved or used by all of this user id's processes.
++        #[cfg(target_os = "freebsd")]
++        RLIMIT_SWAP,
++    }
++}
++
++#[cfg(not(target_os = "linux"))]
++libc_enum!{
++    /// A resource that limits apply to
++    #[repr(i32)]
++    pub enum Resource {
++        // POSIX
++        /// This is the maximum size of the process's virtual memory (address space). The limit is
++        /// specified in bytes, and is rounded down to the system page size.
+         RLIMIT_AS,
+-        /// This is the maximum size of a core file (see core(5)) in bytes that the process may dump.
++        /// This is the maximum size of a core file (see core(5)) in bytes that the process may
++        /// dump.
+         RLIMIT_CORE,
+         /// This is a limit, in seconds, on the amount of CPU time that the process can consume.
+         RLIMIT_CPU,
+-        /// This is the maximum size of the process's data segment (initialized data, uninitialized data, and heap). The limit is specified in bytes, and is rounded down to the system page size.
++        /// This is the maximum size of the process's data segment (initialized data, uninitialized
++        /// data, and heap). The limit is specified in bytes, and is rounded down to the system
++        /// page size.
+         RLIMIT_DATA,
+-        /// This is the maximum size in bytes of files that the process may create. Attempts to extend a file beyond this limit result in delivery of a SIGXFSZ signal.
++        /// This is the maximum size in bytes of files that the process may create. Attempts to
++        /// extend a file beyond this limit result in delivery of a SIGXFSZ signal.
+         RLIMIT_FSIZE,
+-        /// This specifies a value one greater than the maximum file descriptor number that can be opened by this process.
++        /// This specifies a value one greater than the maximum file descriptor number that can be
++        /// opened by this process.
+         RLIMIT_NOFILE,
+-        /// This is the maximum size of the process stack, in bytes. Upon reaching this limit, a SIGSEGV signal is generated.
++        /// This is the maximum size of the process stack, in bytes. Upon reaching this limit, a
++        /// SIGSEGV signal is generated.
+         RLIMIT_STACK,
+ 
+         // BSDs and Linux
+-        /// This is the maximum number of bytes of memory that may be locked into RAM. This limit is in effect rounded down to the nearest multiple of the system page size.
++        /// This is the maximum number of bytes of memory that may be locked into RAM. This limit
++        /// is in effect rounded down to the nearest multiple of the system page size.
+         #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_MEMLOCK,
+-        /// This is a limit on the number of extant process (or, more precisely on Linux, threads) for the real user ID of the calling process.
++        /// This is a limit on the number of extant process (or, more precisely on Linux, threads)
++        /// for the real user ID of the calling process.
+         #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+         RLIMIT_NPROC,
+         /// This is a limit (in bytes) on the process's resident set (the number of virtual pages resident in RAM).
+@@ -41,19 +140,26 @@ libc_enum!{
+         /// This is a limit on the combined number of flock(2) locks and fcntl(2) leases that this process may establish.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_LOCKS,
+-        /// This is a limit on the number of bytes that can be allocated for POSIX message queues for the real user ID of the calling process.
++        /// This is a limit on the number of bytes that can be allocated for POSIX message queues
++        /// for the real user ID of the calling process.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_MSGQUEUE,
+-        /// This specifies a ceiling to which the process's nice value can be raised using setpriority(2) or nice(2). The actual ceiling for the nice value is calculated as 20 - rlim_cur.
++        /// This specifies a ceiling to which the process's nice value can be raised using
++        /// setpriority(2) or nice(2). The actual ceiling for the nice value is calculated as 20 -
++        /// rlim_cur.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_NICE,
+-        /// This specifies a ceiling on the real-time priority that may be set for this process using sched_setscheduler(2) and sched_setparam(2).
++        /// This specifies a ceiling on the real-time priority that may be set for this process
++        /// using sched_setscheduler(2) and sched_setparam(2).
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_RTPRIO,
+-        /// This is a limit (in microseconds) on the amount of CPU time that a process scheduled under a real-time scheduling policy may consume without making a blocking system call.
++        /// This is a limit (in microseconds) on the amount of CPU time that a process scheduled
++        /// under a real-time scheduling policy may consume without making a blocking system call.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_RTTIME,
+-        /// This is a limit on the number of signals that may be queued for the real user ID of the calling process. Both standard and real-time signals are counted for the purpose of checking this limit.
++        /// This is a limit on the number of signals that may be queued for the real user ID of the
++        /// calling process. Both standard and real-time signals are counted for the purpose of
++        /// checking this limit.
+         #[cfg(any(target_os = "android", target_os = "linux"))]
+         RLIMIT_SIGPENDING,
+ 
+@@ -97,8 +203,14 @@ libc_enum!{
+ ///
+ /// [`Resource`]: enum.Resource.html
+ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)> {
+-    let mut rlim: rlimit = unsafe { mem::MaybeUninit::uninit().assume_init() };
+-    let res = unsafe { libc::getrlimit(resource as c_uint, &mut rlim as *mut _) };
++    let mut rlim = mem::MaybeUninit::<&rlimit>::uninit();
++
++    #[cfg(not(any(target_os = "freebsd", target_os = "macos", target_os = "openbsd", target_os = "netbsd")))]
++    let res = unsafe { libc::getrlimit(resource as __rlimit_resource_t, rlim.as_mut_ptr() as *mut _) };
++    #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "openbsd", target_os = "netbsd"))]
++    let res = unsafe { libc::getrlimit(resource as c_int, rlim.as_mut_ptr() as *mut _) };
++
++    let rlim = unsafe { rlim.assume_init() };
+     // TODO: use Option::filter after it has been stabilized
+     Errno::result(res).map(|_| {
+         (if rlim.rlim_cur != RLIM_INFINITY { Some(rlim.rlim_cur) } else { None },
+@@ -133,10 +245,14 @@ pub fn getrlimit(resource: Resource) -> Result<(Option<rlim_t>, Option<rlim_t>)>
+ ///
+ /// [`Resource`]: enum.Resource.html
+ pub fn setrlimit(resource: Resource, soft_limit: Option<rlim_t>, hard_limit: Option<rlim_t>) -> Result<()> {
+-    let mut rlim: rlimit = unsafe { mem::MaybeUninit::uninit().assume_init() };
++    let mut rlim: rlimit = unsafe { mem::zeroed() };
+     rlim.rlim_cur = soft_limit.unwrap_or(RLIM_INFINITY);
+     rlim.rlim_max = hard_limit.unwrap_or(RLIM_INFINITY);
+     
+-    let res = unsafe { libc::setrlimit(resource as c_uint, &rlim as *const _) };
++    #[cfg(not(any(target_os = "freebsd", target_os = "macos", target_os = "openbsd", target_os = "netbsd")))]
++    let res = unsafe { libc::setrlimit(resource as __rlimit_resource_t, &rlim as *const _) };
++    #[cfg(any(target_os = "freebsd", target_os = "macos", target_os = "openbsd", target_os = "netbsd"))]
++    let res = unsafe { libc::setrlimit(resource as c_int, &rlim as *const _) };
++
+     Errno::result(res).map(|_| ())
+ }
