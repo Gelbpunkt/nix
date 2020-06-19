@@ -9,9 +9,9 @@ use std::iter::Iterator;
 use std::mem;
 use std::option::Option;
 
-use crate::{Result, Errno};
-use crate::sys::socket::SockAddr;
 use crate::net::if_::*;
+use crate::sys::socket::SockAddr;
+use crate::{Errno, Result};
 
 /// Describes a single address for an interface as returned by `getifaddrs`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -126,11 +126,9 @@ impl Iterator for InterfaceAddressIterator {
 pub fn getifaddrs() -> Result<InterfaceAddressIterator> {
     let mut addrs = mem::MaybeUninit::<*mut libc::ifaddrs>::uninit();
     unsafe {
-        Errno::result(libc::getifaddrs(addrs.as_mut_ptr())).map(|_| {
-            InterfaceAddressIterator {
-                base: addrs.assume_init(),
-                next: addrs.assume_init(),
-            }
+        Errno::result(libc::getifaddrs(addrs.as_mut_ptr())).map(|_| InterfaceAddressIterator {
+            base: addrs.assume_init(),
+            next: addrs.assume_init(),
         })
     }
 }

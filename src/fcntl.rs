@@ -1,17 +1,17 @@
 use crate::errno::Errno;
+use crate::sys::stat::Mode;
+use crate::{NixPath, Result};
 use libc::{self, c_char, c_int, c_uint, size_t, ssize_t};
 use std::ffi::OsString;
 #[cfg(not(target_os = "redox"))]
 use std::os::raw;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
-use crate::sys::stat::Mode;
-use crate::{NixPath, Result};
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
-use std::ptr; // For splice and copy_file_range
+use crate::sys::uio::IoVec;
 #[cfg(any(target_os = "android", target_os = "linux"))]
-use crate::sys::uio::IoVec; // For vmsplice
+use std::ptr; // For splice and copy_file_range // For vmsplice
 
 #[cfg(any(
     target_os = "linux",
@@ -162,8 +162,8 @@ libc_bitflags!(
 );
 
 pub fn open<P: ?Sized + NixPath>(path: &P, oflag: OFlag, mode: Mode) -> Result<RawFd> {
-    let fd = path.with_nix_path(|cstr| {
-        unsafe { libc::open(cstr.as_ptr(), oflag.bits(), mode.bits() as c_uint) }
+    let fd = path.with_nix_path(|cstr| unsafe {
+        libc::open(cstr.as_ptr(), oflag.bits(), mode.bits() as c_uint)
     })?;
 
     Errno::result(fd)
@@ -176,8 +176,8 @@ pub fn openat<P: ?Sized + NixPath>(
     oflag: OFlag,
     mode: Mode,
 ) -> Result<RawFd> {
-    let fd = path.with_nix_path(|cstr| {
-        unsafe { libc::openat(dirfd, cstr.as_ptr(), oflag.bits(), mode.bits() as c_uint) }
+    let fd = path.with_nix_path(|cstr| unsafe {
+        libc::openat(dirfd, cstr.as_ptr(), oflag.bits(), mode.bits() as c_uint)
     })?;
     Errno::result(fd)
 }
@@ -587,9 +587,9 @@ pub fn fallocate(
 ))]
 mod posix_fadvise {
     use crate::errno::Errno;
+    use crate::Result;
     use libc;
     use std::os::unix::io::RawFd;
-    use crate::Result;
 
     libc_enum! {
         #[repr(i32)]

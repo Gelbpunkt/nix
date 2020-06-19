@@ -1,10 +1,10 @@
-use libc;
-#[cfg(not(target_env = "musl"))]
-use crate::Result;
 #[cfg(not(target_env = "musl"))]
 use crate::errno::Errno;
-use std::mem;
 use crate::sys::signal::SigSet;
+#[cfg(not(target_env = "musl"))]
+use crate::Result;
+use libc;
+use std::mem;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct UContext {
@@ -17,15 +17,15 @@ impl UContext {
         let mut context = mem::MaybeUninit::<libc::ucontext_t>::uninit();
         let res = unsafe { libc::getcontext(context.as_mut_ptr()) };
         Errno::result(res).map(|_| unsafe {
-            UContext { context: context.assume_init()}
+            UContext {
+                context: context.assume_init(),
+            }
         })
     }
 
     #[cfg(not(target_env = "musl"))]
     pub fn set(&self) -> Result<()> {
-        let res = unsafe {
-            libc::setcontext(&self.context as *const libc::ucontext_t)
-        };
+        let res = unsafe { libc::setcontext(&self.context as *const libc::ucontext_t) };
         Errno::result(res).map(drop)
     }
 

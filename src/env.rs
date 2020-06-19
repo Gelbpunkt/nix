@@ -1,5 +1,5 @@
-use cfg_if::cfg_if;
 use crate::{Error, Result};
+use cfg_if::cfg_if;
 
 /// Clear the environment of all name-value pairs.
 ///

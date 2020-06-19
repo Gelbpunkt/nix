@@ -21,19 +21,19 @@
 //! [`aio_cancel_all`](fn.aio_cancel_all.html), though the operating system may
 //! not support this for all filesystems and devices.
 
-use crate::{Error, Result};
 use crate::errno::Errno;
-use std::os::unix::io::RawFd;
+use crate::sys::signal::*;
+use crate::sys::time::TimeSpec;
+use crate::{Error, Result};
 use libc::{c_void, off_t, size_t};
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::mem;
+use std::os::unix::io::RawFd;
 use std::ptr::{null, null_mut};
-use crate::sys::signal::*;
 use std::thread;
-use crate::sys::time::TimeSpec;
 
 libc_enum! {
     /// Mode for `AioCb::fsync`.  Controls whether only data or both data and
@@ -115,14 +115,16 @@ impl<'a> Debug for Buffer<'a> {
             Buffer::None => write!(fmt, "None"),
             Buffer::Phantom(p) => p.fmt(fmt),
             Buffer::BoxedSlice(ref bs) => {
-                let borrowed : &dyn Borrow<[u8]> = bs.borrow();
-                write!(fmt, "BoxedSlice({:?})",
-                    borrowed as *const dyn Borrow<[u8]>)
-            },
+                let borrowed: &dyn Borrow<[u8]> = bs.borrow();
+                write!(fmt, "BoxedSlice({:?})", borrowed as *const dyn Borrow<[u8]>)
+            }
             Buffer::BoxedMutSlice(ref bms) => {
-                let borrowed : &dyn BorrowMut<[u8]> = bms.borrow();
-                write!(fmt, "BoxedMutSlice({:?})",
-                    borrowed as *const dyn BorrowMut<[u8]>)
+                let borrowed: &dyn BorrowMut<[u8]> = bms.borrow();
+                write!(
+                    fmt,
+                    "BoxedMutSlice({:?})",
+                    borrowed as *const dyn BorrowMut<[u8]>
+                )
             }
         }
     }
@@ -142,7 +144,7 @@ pub struct AioCb<'a> {
     ///
     /// Used to keep buffers from `Drop`'ing, and may be returned once the
     /// `AioCb` is completed by [`buffer`](#method.buffer).
-    buffer: Buffer<'a>
+    buffer: Buffer<'a>,
 }
 
 impl<'a> AioCb<'a> {
@@ -242,8 +244,7 @@ impl<'a> AioCb<'a> {
     /// aiocb.aio_return().expect("aio_fsync failed late");
     /// # }
     /// ```
-    pub fn from_fd(fd: RawFd, prio: libc::c_int,
-                    sigev_notify: SigevNotify) -> AioCb<'a> {
+    pub fn from_fd(fd: RawFd, prio: libc::c_int, sigev_notify: SigevNotify) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         a.aio_offset = 0;
         a.aio_nbytes = 0;
@@ -253,7 +254,7 @@ impl<'a> AioCb<'a> {
             aiocb: a,
             mutable: false,
             in_progress: false,
-            buffer: Buffer::None
+            buffer: Buffer::None,
         }
     }
 
@@ -314,9 +315,14 @@ impl<'a> AioCb<'a> {
     /// assert_eq!(rbuf, b"cdef");
     /// # }
     /// ```
-    pub fn from_mut_slice(fd: RawFd, offs: off_t, buf: &'a mut [u8],
-                          prio: libc::c_int, sigev_notify: SigevNotify,
-                          opcode: LioOpcode) -> AioCb<'a> {
+    pub fn from_mut_slice(
+        fd: RawFd,
+        offs: off_t,
+        buf: &'a mut [u8],
+        prio: libc::c_int,
+        sigev_notify: SigevNotify,
+        opcode: LioOpcode,
+    ) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         a.aio_offset = offs;
         a.aio_nbytes = buf.len() as size_t;
@@ -435,13 +441,18 @@ impl<'a> AioCb<'a> {
     /// ```
     ///
     /// [`from_slice`]: #method.from_slice
-    pub fn from_boxed_slice(fd: RawFd, offs: off_t, buf: Box<dyn Borrow<[u8]>>,
-                      prio: libc::c_int, sigev_notify: SigevNotify,
-                      opcode: LioOpcode) -> AioCb<'a> {
+    pub fn from_boxed_slice(
+        fd: RawFd,
+        offs: off_t,
+        buf: Box<dyn Borrow<[u8]>>,
+        prio: libc::c_int,
+        sigev_notify: SigevNotify,
+        opcode: LioOpcode,
+    ) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         {
-            let borrowed : &dyn Borrow<[u8]> = buf.borrow();
-            let slice : &[u8] = borrowed.borrow();
+            let borrowed: &dyn Borrow<[u8]> = buf.borrow();
+            let slice: &[u8] = borrowed.borrow();
             a.aio_nbytes = slice.len() as size_t;
             a.aio_buf = slice.as_ptr() as *mut c_void;
         }
@@ -500,14 +511,18 @@ impl<'a> AioCb<'a> {
     ///
     /// [`from_boxed_slice`]: #method.from_boxed_slice
     /// [`from_mut_slice`]: #method.from_mut_slice
-    pub fn from_boxed_mut_slice(fd: RawFd, offs: off_t,
-                                mut buf: Box<dyn BorrowMut<[u8]>>,
-                                prio: libc::c_int, sigev_notify: SigevNotify,
-                                opcode: LioOpcode) -> AioCb<'a> {
+    pub fn from_boxed_mut_slice(
+        fd: RawFd,
+        offs: off_t,
+        mut buf: Box<dyn BorrowMut<[u8]>>,
+        prio: libc::c_int,
+        sigev_notify: SigevNotify,
+        opcode: LioOpcode,
+    ) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         {
-            let borrowed : &mut dyn BorrowMut<[u8]> = buf.borrow_mut();
-            let slice : &mut [u8] = borrowed.borrow_mut();
+            let borrowed: &mut dyn BorrowMut<[u8]> = buf.borrow_mut();
+            let slice: &mut [u8] = borrowed.borrow_mut();
             a.aio_nbytes = slice.len() as size_t;
             a.aio_buf = slice.as_mut_ptr() as *mut c_void;
         }
@@ -549,10 +564,15 @@ impl<'a> AioCb<'a> {
     ///
     /// The caller must ensure that the storage pointed to by `buf` outlives the
     /// `AioCb`.  The lifetime checker can't help here.
-    pub unsafe fn from_mut_ptr(fd: RawFd, offs: off_t,
-                           buf: *mut c_void, len: usize,
-                           prio: libc::c_int, sigev_notify: SigevNotify,
-                           opcode: LioOpcode) -> AioCb<'a> {
+    pub unsafe fn from_mut_ptr(
+        fd: RawFd,
+        offs: off_t,
+        buf: *mut c_void,
+        len: usize,
+        prio: libc::c_int,
+        sigev_notify: SigevNotify,
+        opcode: LioOpcode,
+    ) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         a.aio_offset = offs;
         a.aio_nbytes = len;
@@ -563,7 +583,7 @@ impl<'a> AioCb<'a> {
             aiocb: a,
             mutable: true,
             in_progress: false,
-            buffer: Buffer::None
+            buffer: Buffer::None,
         }
     }
 
@@ -594,10 +614,15 @@ impl<'a> AioCb<'a> {
     ///
     /// The caller must ensure that the storage pointed to by `buf` outlives the
     /// `AioCb`.  The lifetime checker can't help here.
-    pub unsafe fn from_ptr(fd: RawFd, offs: off_t,
-                           buf: *const c_void, len: usize,
-                           prio: libc::c_int, sigev_notify: SigevNotify,
-                           opcode: LioOpcode) -> AioCb<'a> {
+    pub unsafe fn from_ptr(
+        fd: RawFd,
+        offs: off_t,
+        buf: *const c_void,
+        len: usize,
+        prio: libc::c_int,
+        sigev_notify: SigevNotify,
+        opcode: LioOpcode,
+    ) -> AioCb<'a> {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         a.aio_offset = offs;
         a.aio_nbytes = len;
@@ -610,7 +635,7 @@ impl<'a> AioCb<'a> {
             aiocb: a,
             mutable: false,
             in_progress: false,
-            buffer: Buffer::None
+            buffer: Buffer::None,
         }
     }
 
@@ -655,9 +680,14 @@ impl<'a> AioCb<'a> {
     // could take the former and AioCb::write could take the latter.  However,
     // then lio_listio wouldn't work, because that function needs a slice of
     // AioCb, and they must all be of the same type.
-    pub fn from_slice(fd: RawFd, offs: off_t, buf: &'a [u8],
-                      prio: libc::c_int, sigev_notify: SigevNotify,
-                      opcode: LioOpcode) -> AioCb {
+    pub fn from_slice(
+        fd: RawFd,
+        offs: off_t,
+        buf: &'a [u8],
+        prio: libc::c_int,
+        sigev_notify: SigevNotify,
+        opcode: LioOpcode,
+    ) -> AioCb {
         let mut a = AioCb::common_init(fd, prio, sigev_notify);
         a.aio_offset = offs;
         a.aio_nbytes = buf.len() as size_t;
@@ -665,7 +695,10 @@ impl<'a> AioCb<'a> {
         // but technically its only unsafe to dereference it, not to create
         // it.
         a.aio_buf = buf.as_ptr() as *mut c_void;
-        assert!(opcode != LioOpcode::LIO_READ, "Can't read into an immutable buffer");
+        assert!(
+            opcode != LioOpcode::LIO_READ,
+            "Can't read into an immutable buffer"
+        );
         a.aio_lio_opcode = opcode as libc::c_int;
 
         AioCb {
@@ -676,13 +709,12 @@ impl<'a> AioCb<'a> {
         }
     }
 
-    fn common_init(fd: RawFd, prio: libc::c_int,
-                   sigev_notify: SigevNotify) -> libc::aiocb {
+    fn common_init(fd: RawFd, prio: libc::c_int, sigev_notify: SigevNotify) -> libc::aiocb {
         // Use mem::zeroed instead of explicitly zeroing each field, because the
         // number and name of reserved fields is OS-dependent.  On some OSes,
         // some reserved fields are used the kernel for state, and must be
         // explicitly zeroed when allocated.
-        let mut a = unsafe { mem::zeroed::<libc::aiocb>()};
+        let mut a = unsafe { mem::zeroed::<libc::aiocb>() };
         a.aio_fildes = fd;
         a.aio_reqprio = prio;
         a.aio_sigevent = SigEvent::new(sigev_notify).sigevent();
@@ -747,7 +779,7 @@ impl<'a> AioCb<'a> {
             libc::AIO_NOTCANCELED => Ok(AioCancelStat::AioNotCanceled),
             libc::AIO_ALLDONE => Ok(AioCancelStat::AioAllDone),
             -1 => Err(Error::last()),
-            _ => panic!("unknown aio_cancel return value")
+            _ => panic!("unknown aio_cancel return value"),
         }
     }
 
@@ -794,7 +826,7 @@ impl<'a> AioCb<'a> {
             0 => Ok(()),
             num if num > 0 => Err(Error::from_errno(Errno::from_i32(num))),
             -1 => Err(Error::last()),
-            num => panic!("unknown aio_error return value {:?}", num)
+            num => panic!("unknown aio_error return value {:?}", num),
         }
     }
 
@@ -805,9 +837,7 @@ impl<'a> AioCb<'a> {
     /// [aio_fsync](http://pubs.opengroup.org/onlinepubs/9699919799/functions/aio_fsync.html)
     pub fn fsync(&mut self, mode: AioFsyncMode) -> Result<()> {
         let p: *mut libc::aiocb = &mut self.aiocb;
-        Errno::result(unsafe {
-                libc::aio_fsync(mode as libc::c_int, p)
-        }).map(|_| {
+        Errno::result(unsafe { libc::aio_fsync(mode as libc::c_int, p) }).map(|_| {
             self.in_progress = true;
         })
     }
@@ -821,7 +851,7 @@ impl<'a> AioCb<'a> {
             libc::LIO_READ => Some(LioOpcode::LIO_READ),
             libc::LIO_WRITE => Some(LioOpcode::LIO_WRITE),
             libc::LIO_NOP => Some(LioOpcode::LIO_NOP),
-            _ => None
+            _ => None,
         }
     }
 
@@ -852,9 +882,7 @@ impl<'a> AioCb<'a> {
     pub fn read(&mut self) -> Result<()> {
         assert!(self.mutable, "Can't read into an immutable buffer");
         let p: *mut libc::aiocb = &mut self.aiocb;
-        Errno::result(unsafe {
-            libc::aio_read(p)
-        }).map(|_| {
+        Errno::result(unsafe { libc::aio_read(p) }).map(|_| {
             self.in_progress = true;
         })
     }
@@ -887,13 +915,10 @@ impl<'a> AioCb<'a> {
     /// [aio_write](http://pubs.opengroup.org/onlinepubs/9699919799/functions/aio_write.html)
     pub fn write(&mut self) -> Result<()> {
         let p: *mut libc::aiocb = &mut self.aiocb;
-        Errno::result(unsafe {
-            libc::aio_write(p)
-        }).map(|_| {
+        Errno::result(unsafe { libc::aio_write(p) }).map(|_| {
             self.in_progress = true;
         })
     }
-
 }
 
 /// Cancels outstanding AIO requests for a given file descriptor.
@@ -942,7 +967,7 @@ pub fn aio_cancel_all(fd: RawFd) -> Result<AioCancelStat> {
         libc::AIO_NOTCANCELED => Ok(AioCancelStat::AioNotCanceled),
         libc::AIO_ALLDONE => Ok(AioCancelStat::AioAllDone),
         -1 => Err(Error::last()),
-        _ => panic!("unknown aio_cancel return value")
+        _ => panic!("unknown aio_cancel return value"),
     }
 }
 
@@ -981,12 +1006,10 @@ pub fn aio_suspend(list: &[&AioCb], timeout: Option<TimeSpec>) -> Result<()> {
     let plist = list as *const [&AioCb] as *const [*const libc::aiocb];
     let p = plist as *const *const libc::aiocb;
     let timep = match timeout {
-        None    => null::<libc::timespec>(),
-        Some(x) => x.as_ref() as *const libc::timespec
+        None => null::<libc::timespec>(),
+        Some(x) => x.as_ref() as *const libc::timespec,
     };
-    Errno::result(unsafe {
-        libc::aio_suspend(p, list.len() as i32, timep)
-    }).map(drop)
+    Errno::result(unsafe { libc::aio_suspend(p, list.len() as i32, timep) }).map(drop)
 }
 
 impl<'a> Debug for AioCb<'a> {
@@ -1003,8 +1026,10 @@ impl<'a> Drop for AioCb<'a> {
     /// If the `AioCb` has no remaining state in the kernel, just drop it.
     /// Otherwise, dropping constitutes a resource leak, which is an error
     fn drop(&mut self) {
-        assert!(thread::panicking() || !self.in_progress,
-                "Dropped an in-progress AioCb");
+        assert!(
+            thread::panicking() || !self.in_progress,
+            "Dropped an in-progress AioCb"
+        );
     }
 }
 
@@ -1029,7 +1054,7 @@ pub struct LioCb<'a> {
 
     /// A partial set of results.  This field will get populated by
     /// `listio_resubmit` when an `LioCb` is resubmitted after an error
-    results: Vec<Option<Result<isize>>>
+    results: Vec<Option<Result<isize>>>,
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "macos")))]
@@ -1039,7 +1064,7 @@ impl<'a> LioCb<'a> {
         LioCb {
             aiocbs: Vec::with_capacity(capacity),
             list: Vec::with_capacity(capacity),
-            results: Vec::with_capacity(capacity)
+            results: Vec::with_capacity(capacity),
         }
     }
 
@@ -1088,20 +1113,17 @@ impl<'a> LioCb<'a> {
     ///
     /// [`aio_suspend`]: fn.aio_suspend.html
     /// [`AioCb::error`]: struct.AioCb.html#method.error
-    pub fn listio(&mut self, mode: LioMode,
-                  sigev_notify: SigevNotify) -> Result<()> {
+    pub fn listio(&mut self, mode: LioMode, sigev_notify: SigevNotify) -> Result<()> {
         let sigev = SigEvent::new(sigev_notify);
         let sigevp = &mut sigev.sigevent() as *mut libc::sigevent;
         self.list.clear();
         for a in &mut self.aiocbs {
             a.in_progress = true;
-            self.list.push(a as *mut AioCb<'a>
-                             as *mut libc::aiocb);
+            self.list.push(a as *mut AioCb<'a> as *mut libc::aiocb);
         }
         let p = self.list.as_ptr();
-        Errno::result(unsafe {
-            libc::lio_listio(mode as i32, p, self.list.len() as i32, sigevp)
-        }).map(drop)
+        Errno::result(unsafe { libc::lio_listio(mode as i32, p, self.list.len() as i32, sigevp) })
+            .map(drop)
     }
 
     /// Resubmits any incomplete operations with [`lio_listio`].
@@ -1155,8 +1177,7 @@ impl<'a> LioCb<'a> {
     // being stable.
     // Note: aiocbs that are Ok(()) must be finalized by aio_return, or else the
     // sigev_notify will immediately refire.
-    pub fn listio_resubmit(&mut self, mode:LioMode,
-                           sigev_notify: SigevNotify) -> Result<()> {
+    pub fn listio_resubmit(&mut self, mode: LioMode, sigev_notify: SigevNotify) -> Result<()> {
         let sigev = SigEvent::new(sigev_notify);
         let sigevp = &mut sigev.sigevent() as *mut libc::sigevent;
         self.list.clear();
@@ -1174,22 +1195,22 @@ impl<'a> LioCb<'a> {
                 Ok(()) => {
                     // aiocb is complete; collect its status and don't resubmit
                     self.results[i] = Some(a.aio_return());
-                },
+                }
                 Err(Error::Sys(Errno::EAGAIN)) => {
                     self.list.push(a as *mut AioCb<'a> as *mut libc::aiocb);
-                },
+                }
                 Err(Error::Sys(Errno::EINPROGRESS)) => {
                     // aiocb is was successfully queued; no need to do anything
-                },
-                Err(Error::Sys(Errno::EINVAL)) => panic!(
-                    "AioCb was never submitted, or already finalized"),
-                _ => unreachable!()
+                }
+                Err(Error::Sys(Errno::EINVAL)) => {
+                    panic!("AioCb was never submitted, or already finalized")
+                }
+                _ => unreachable!(),
             }
         }
         let p = self.list.as_ptr();
-        Errno::result(unsafe {
-            libc::lio_listio(mode as i32, p, self.list.len() as i32, sigevp)
-        }).map(drop)
+        Errno::result(unsafe { libc::lio_listio(mode as i32, p, self.list.len() as i32, sigevp) })
+            .map(drop)
     }
 
     /// Collect final status for an individual `AioCb` submitted as part of an

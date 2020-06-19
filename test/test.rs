@@ -36,17 +36,14 @@ macro_rules! skip_if_jailed {
     ($name:expr) => {
         use ::sysctl::CtlValue;
 
-        if let CtlValue::Int(1) = ::sysctl::value("security.jail.jailed")
-            .unwrap()
-        {
+        if let CtlValue::Int(1) = ::sysctl::value("security.jail.jailed").unwrap() {
             use ::std::io::Write;
             let stderr = ::std::io::stderr();
             let mut handle = stderr.lock();
-            writeln!(handle, "{} cannot run in a jail. Skipping test.", $name)
-                .unwrap();
+            writeln!(handle, "{} cannot run in a jail. Skipping test.", $name).unwrap();
             return;
         }
-    }
+    };
 }
 
 #[cfg(not(target_os = "redox"))]
@@ -129,41 +126,43 @@ mod sys;
 #[cfg(not(target_os = "redox"))]
 mod test_dir;
 mod test_fcntl;
-#[cfg(any(target_os = "android",
-          target_os = "linux"))]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 mod test_kmod;
-#[cfg(any(target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "fushsia",
-          target_os = "linux",
-          target_os = "netbsd"))]
+#[cfg(any(
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "fushsia",
+    target_os = "linux",
+    target_os = "netbsd"
+))]
 mod test_mq;
 #[cfg(not(target_os = "redox"))]
 mod test_net;
 mod test_nix_path;
-mod test_resource;
 mod test_poll;
 #[cfg(not(target_os = "redox"))]
 mod test_pty;
-#[cfg(any(target_os = "android",
-          target_os = "linux"))]
+mod test_resource;
+#[cfg(any(target_os = "android", target_os = "linux"))]
 mod test_sched;
-#[cfg(any(target_os = "android",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "linux",
-          target_os = "macos"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos"
+))]
 mod test_sendfile;
 mod test_stat;
 mod test_unistd;
 
+use nix::unistd::{chdir, getcwd, read};
 use std::os::unix::io::RawFd;
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock, RwLockWriteGuard};
-use nix::unistd::{chdir, getcwd, read};
 
 /// Helper function analogous to `std::io::Read::read_exact`, but for `RawFD`s
-fn read_exact(f: RawFd, buf: &mut  [u8]) {
+fn read_exact(f: RawFd, buf: &mut [u8]) {
     let mut len = 0;
     while len < buf.len() {
         // get_mut would be better than split_at_mut, but it requires nightly
@@ -194,14 +193,15 @@ lazy_static! {
 /// RAII object that restores a test's original directory on drop
 struct DirRestore<'a> {
     d: PathBuf,
-    _g: RwLockWriteGuard<'a, ()>
+    _g: RwLockWriteGuard<'a, ()>,
 }
 
 impl<'a> DirRestore<'a> {
     fn new() -> Self {
-        let guard = crate::CWD_LOCK.write()
+        let guard = crate::CWD_LOCK
+            .write()
             .expect("Lock got poisoned by another test");
-        DirRestore{
+        DirRestore {
             _g: guard,
             d: getcwd().unwrap(),
         }

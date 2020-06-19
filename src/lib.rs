@@ -19,37 +19,40 @@
 pub use libc;
 
 // Private internal modules
-#[macro_use] mod macros;
+#[macro_use]
+mod macros;
 
 // Public crates
 #[cfg(not(target_os = "redox"))]
 pub mod dir;
 pub mod env;
 pub mod errno;
-#[deny(missing_docs)]
-pub mod features;
 pub mod fcntl;
 #[deny(missing_docs)]
-#[cfg(any(target_os = "android",
-          target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "ios",
-          target_os = "linux",
-          target_os = "macos",
-          target_os = "netbsd",
-          target_os = "openbsd"))]
+pub mod features;
+#[deny(missing_docs)]
+#[cfg(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
 pub mod ifaddrs;
-#[cfg(any(target_os = "android",
-          target_os = "linux"))]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 pub mod kmod;
-#[cfg(any(target_os = "android",
-          target_os = "linux"))]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 pub mod mount;
-#[cfg(any(target_os = "dragonfly",
-          target_os = "freebsd",
-          target_os = "fushsia",
-          target_os = "linux",
-          target_os = "netbsd"))]
+#[cfg(any(
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "fushsia",
+    target_os = "linux",
+    target_os = "netbsd"
+))]
 pub mod mqueue;
 #[deny(missing_docs)]
 #[cfg(not(target_os = "redox"))]
@@ -63,8 +66,7 @@ pub mod sched;
 pub mod sys;
 // This can be implemented for other platforms as soon as libc
 // provides bindings for them.
-#[cfg(all(target_os = "linux",
-          any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
 pub mod ucontext;
 pub mod unistd;
 
@@ -76,10 +78,10 @@ pub mod unistd;
 
 use libc::{c_char, PATH_MAX};
 
-use std::{error, fmt, ptr, result};
 use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::{error, fmt, ptr, result};
 
 use errno::Errno;
 
@@ -138,15 +140,18 @@ impl Error {
     pub fn invalid_argument() -> Error {
         Error::Sys(Errno::EINVAL)
     }
-
 }
 
 impl From<Errno> for Error {
-    fn from(errno: Errno) -> Error { Error::from_errno(errno) }
+    fn from(errno: Errno) -> Error {
+        Error::from_errno(errno)
+    }
 }
 
 impl From<std::string::FromUtf8Error> for Error {
-    fn from(_: std::string::FromUtf8Error) -> Error { Error::InvalidUtf8 }
+    fn from(_: std::string::FromUtf8Error) -> Error {
+        Error::InvalidUtf8
+    }
 }
 
 impl error::Error for Error {}
@@ -168,7 +173,8 @@ pub trait NixPath {
     fn len(&self) -> usize;
 
     fn with_nix_path<T, F>(&self, f: F) -> Result<T>
-        where F: FnOnce(&CStr) -> T;
+    where
+        F: FnOnce(&CStr) -> T;
 }
 
 impl NixPath for str {
@@ -181,9 +187,11 @@ impl NixPath for str {
     }
 
     fn with_nix_path<T, F>(&self, f: F) -> Result<T>
-        where F: FnOnce(&CStr) -> T {
-            OsStr::new(self).with_nix_path(f)
-        }
+    where
+        F: FnOnce(&CStr) -> T,
+    {
+        OsStr::new(self).with_nix_path(f)
+    }
 }
 
 impl NixPath for OsStr {
@@ -196,9 +204,11 @@ impl NixPath for OsStr {
     }
 
     fn with_nix_path<T, F>(&self, f: F) -> Result<T>
-        where F: FnOnce(&CStr) -> T {
-            self.as_bytes().with_nix_path(f)
-        }
+    where
+        F: FnOnce(&CStr) -> T,
+    {
+        self.as_bytes().with_nix_path(f)
+    }
 }
 
 impl NixPath for CStr {
@@ -211,7 +221,9 @@ impl NixPath for CStr {
     }
 
     fn with_nix_path<T, F>(&self, f: F) -> Result<T>
-            where F: FnOnce(&CStr) -> T {
+    where
+        F: FnOnce(&CStr) -> T,
+    {
         // Equivalence with the [u8] impl.
         if self.len() >= PATH_MAX as usize {
             return Err(Error::InvalidPath);
@@ -231,7 +243,9 @@ impl NixPath for [u8] {
     }
 
     fn with_nix_path<T, F>(&self, f: F) -> Result<T>
-            where F: FnOnce(&CStr) -> T {
+    where
+        F: FnOnce(&CStr) -> T,
+    {
         let mut buf = [0u8; PATH_MAX as usize];
 
         if self.len() >= PATH_MAX as usize {
@@ -246,7 +260,6 @@ impl NixPath for [u8] {
                     ptr::copy_nonoverlapping(self.as_ptr(), buf.as_mut_ptr(), self.len());
                     Ok(f(CStr::from_ptr(buf.as_ptr() as *const c_char)))
                 }
-
             }
         }
     }
@@ -261,7 +274,10 @@ impl NixPath for Path {
         NixPath::len(self.as_os_str())
     }
 
-    fn with_nix_path<T, F>(&self, f: F) -> Result<T> where F: FnOnce(&CStr) -> T {
+    fn with_nix_path<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&CStr) -> T,
+    {
         self.as_os_str().with_nix_path(f)
     }
 }
@@ -275,7 +291,10 @@ impl NixPath for PathBuf {
         NixPath::len(self.as_os_str())
     }
 
-    fn with_nix_path<T, F>(&self, f: F) -> Result<T> where F: FnOnce(&CStr) -> T {
+    fn with_nix_path<T, F>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&CStr) -> T,
+    {
         self.as_os_str().with_nix_path(f)
     }
 }

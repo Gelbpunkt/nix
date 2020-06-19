@@ -1,15 +1,15 @@
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
 use std::os::unix::prelude::*;
+use std::path::Path;
 use tempfile::tempfile;
 
 use libc::{_exit, STDOUT_FILENO};
-use nix::fcntl::{OFlag, open};
+use nix::fcntl::{open, OFlag};
 use nix::pty::*;
 use nix::sys::stat;
 use nix::sys::termios::*;
-use nix::unistd::{write, close, pause};
+use nix::unistd::{close, pause, write};
 
 /// Regression test for Issue #659
 /// This is the correct way to explicitly close a `PtyMaster`
@@ -29,14 +29,16 @@ fn test_explicit_close() {
 #[test]
 #[cfg(any(target_os = "android", target_os = "linux"))]
 fn test_ptsname_equivalence() {
-    let _m = crate::PTSNAME_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m = crate::PTSNAME_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
 
     // Open a new PTTY master
     let master_fd = posix_openpt(OFlag::O_RDWR).unwrap();
     assert!(master_fd.as_raw_fd() > 0);
 
     // Get the name of the slave
-    let slave_name = unsafe { ptsname(&master_fd) }.unwrap() ;
+    let slave_name = unsafe { ptsname(&master_fd) }.unwrap();
     let slave_name_r = ptsname_r(&master_fd).unwrap();
     assert_eq!(slave_name, slave_name_r);
 }
@@ -46,7 +48,9 @@ fn test_ptsname_equivalence() {
 #[test]
 #[cfg(any(target_os = "android", target_os = "linux"))]
 fn test_ptsname_copy() {
-    let _m = crate::PTSNAME_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m = crate::PTSNAME_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
 
     // Open a new PTTY master
     let master_fd = posix_openpt(OFlag::O_RDWR).unwrap();
@@ -80,7 +84,9 @@ fn test_ptsname_r_copy() {
 #[test]
 #[cfg(any(target_os = "android", target_os = "linux"))]
 fn test_ptsname_unique() {
-    let _m = crate::PTSNAME_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m = crate::PTSNAME_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
 
     // Open a new PTTY master
     let master1_fd = posix_openpt(OFlag::O_RDWR).unwrap();
@@ -98,7 +104,9 @@ fn test_ptsname_unique() {
 
 /// Common setup for testing PTTY pairs
 fn open_ptty_pair() -> (PtyMaster, File) {
-    let _m = crate::PTSNAME_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m = crate::PTSNAME_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
 
     // Open a new PTTY master
     let master = posix_openpt(OFlag::O_RDWR).expect("posix_openpt failed");
@@ -163,7 +171,9 @@ fn test_write_ptty_pair() {
 #[test]
 fn test_openpty() {
     // openpty uses ptname(3) internally
-    let _m = crate::PTSNAME_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m = crate::PTSNAME_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
 
     let pty = openpty(None, None).unwrap();
     assert!(pty.master > 0);
@@ -198,7 +208,9 @@ fn test_openpty() {
 #[test]
 fn test_openpty_with_termios() {
     // openpty uses ptname(3) internally
-    let _m = crate::PTSNAME_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m = crate::PTSNAME_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
 
     // Open one pty to get attributes for the second one
     let mut termios = {
@@ -245,13 +257,17 @@ fn test_openpty_with_termios() {
 
 #[test]
 fn test_forkpty() {
-    use nix::unistd::ForkResult::*;
     use nix::sys::signal::*;
     use nix::sys::wait::wait;
+    use nix::unistd::ForkResult::*;
     // forkpty calls openpty which uses ptname(3) internally.
-    let _m0 = crate::PTSNAME_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m0 = crate::PTSNAME_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
     // forkpty spawns a child process
-    let _m1 = crate::FORK_MTX.lock().expect("Mutex got poisoned by another test");
+    let _m1 = crate::FORK_MTX
+        .lock()
+        .expect("Mutex got poisoned by another test");
 
     let string = "naninani\n";
     let echoed_string = "naninani\r\n";
@@ -259,9 +275,11 @@ fn test_forkpty() {
     match pty.fork_result {
         Child => {
             write(STDOUT_FILENO, string.as_bytes()).unwrap();
-            pause();  // we need the child to stay alive until the parent calls read
-            unsafe { _exit(0); }
-        },
+            pause(); // we need the child to stay alive until the parent calls read
+            unsafe {
+                _exit(0);
+            }
+        }
         Parent { child } => {
             let mut buf = [0u8; 10];
             assert!(child.as_raw() > 0);
@@ -270,6 +288,6 @@ fn test_forkpty() {
             wait().unwrap(); // keep other tests using generic wait from getting our child
             assert_eq!(&buf, echoed_string.as_bytes());
             close(pty.master).unwrap();
-        },
+        }
     }
 }
